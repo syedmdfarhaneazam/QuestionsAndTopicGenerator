@@ -1,37 +1,47 @@
+import spacy
 from fastapi import FastAPI, Request
-from transformers import pipeline
+from keybert import KeyBERT
+from pydantic import BaseModel
 
-app = FastAPI(title="Topic & Question Generator API")
+app = FastAPI(title="Lightweight Topic & Question Generator")
 
-question_generator = pipeline("text2text-generation", model="t5-base")
-topic_generator = pipeline("text2text-generation", model="t5-base")
+nlp = spacy.load("en_core_web_sm")
+kw_model = KeyBERT(model="all-MiniLM-L6-v2")  # small & fast
 
 
-@app.post("/get_questions")
-async def get_questions(request: Request):
-    data = await request.json()
-    text = data.get("text", "")
-    if not text:
-        return {"error": "Text is required"}
-
-    prompt = f"generate questions: {text}"
-    result = question_generator(
-        prompt, max_length=80, num_return_sequences=3, do_sample=True
-    )
-    questions = [r["generated_text"] for r in result]
-    return {"questions": questions}
+class TextPayload(BaseModel):
+    text: str
 
 
 @app.post("/get_topics")
-async def get_topics(request: Request):
-    data = await request.json()
-    text = data.get("text", "")
+async def get_topics(payload: TextPayload):
+    text = payload.text
     if not text:
         return {"error": "Text is required"}
 
-    prompt = f"extract important topics: {text}"
-    result = topic_generator(
-        prompt, max_length=50, num_return_sequences=3, do_sample=True
+    keywords = kw_model.extract_keywords(
+        text, keyphrase_ngram_range=(1, 2), stop_words="english", top_n=5
     )
-    topics = [r["generated_text"] for r in result]
+    topics = [kw[0] for kw in keywords]
     return {"topics": topics}
+
+
+@app.post("/get_questions")
+async def get_questions(payload: TextPayload):
+    text = payload.text
+    if not text:
+        return {"error": "Text is required"}
+
+    doc = nlp(text)
+    questions = []
+    for sent in doc.sents:
+        for ent in sent.ents:
+            if ent.label_ in ("PERSON", "ORG", "GPE", "DATE"):
+                q = f"What is {ent.text} related to?"
+                questions.append(q)
+    if not questions:
+        questions = [
+            "Can you explain this topic?",
+            "What are the key points discussed?",
+        ]
+    return {"questions": questions}
